@@ -123,3 +123,18 @@ No crates.io dependencies — compiles offline in seconds.
 ## License
 
 MIT — see `src/main.rs` header. Provided as-is: always run the dry-run first and read the report.
+
+---
+
+## Campaign record (2026-11-05/06) — and the free-space ceiling
+
+Real numbers from the full live campaign on the author's machine (94 GB RAM, 2 TB C:):
+
+- **Baseline 1711.14 GB free → peak held ~1720.8 GB free** (60+ GB reclaimed; second `--apply` converges to MB-level)
+- Biggest single levers: C:\Temp traces/fixtures, stale Electron+CLI versions, GIGABYTE AI pair, Python torch stack, Windows Sandbox disposable layers, IMDb cache (script re-downloads), superseded drivers, Windows\Installer orphans, **junction relocation** of dev tooling to a second drive (`F:\backup\relocated` — VS BuildTools, Windows Kits, Package Cache, dotnet, Python, Zoom, openmausbot... all fully working through junctions; zero deletions)
+- System Restore shadow storage capped at 2 GB (`--deep`) — stops multi-GB shadow churn
+- `pagefile.sys` frozen at 32 GB fixed — prevents regrowth to a configured 48 GB
+
+**The ceiling:** `fsutil volume allocationreport` closes the books exactly — remaining used space is live data + the pagefile actively backing committed AI workloads. Going further requires user-authorized trade-offs (pagefile cap + reboot ≈ +16 GB, with commit-limit risk; or removing protected apps). The tool prints these as **BIG OPTIONAL WINS** — it never takes them itself.
+
+Boot task `MichRelocationFinish` (one-shot, self-deleting) completes the remaining locked junction swaps at the next reboot.
