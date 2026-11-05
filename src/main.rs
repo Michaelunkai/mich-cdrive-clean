@@ -797,13 +797,19 @@ fn main() {
 
     if deep && apply {
         println!("\n--deep: running DISM StartComponentCleanup (this can take 5-20 min)...");
-        let st = Command::new("dism.exe")
+        let st = Command::new("C:\\Windows\\System32\\Dism.exe")
             .args(["/Online", "/Cleanup-Image", "/StartComponentCleanup", "/NoRestart"])
             .status();
         match st {
             Ok(s) => println!("DISM exit: {}", s.code().unwrap_or(-1)),
             Err(e) => println!("DISM failed to launch: {e}"),
         }
+        // keep System Restore capped at 2GB on C: (prevents the multi-GB shadow churn)
+        let cap = "Get-WmiObject Win32_ShadowStorage | Where-Object { $_.DiffVolume.DeviceID -like '*Volume{50e23298*' } | ForEach-Object { $_.MaxSpace = 2147483648; $_.Put() } | Out-Null; vssadmin list shadowstorage";
+        let _ = Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", cap])
+            .status()
+            .map(|s| println!("shadow-cap exit: {}", s.code().unwrap_or(-1)));
     }
 
     let (free1, _) = disk_free_bytes("C:\\").unwrap_or((0, 0));
@@ -818,7 +824,9 @@ fn main() {
             println!("  {:>10}  {}", gb(sz), label);
         }
     }
-    println!("\nAlso consider: cap pagefile (94 GB RAM), powercfg /h /type reduced, Docker/WSL/GIGABYTE-AI uninstalls.");
+    println!("\nAlso consider: pagefile.sys (this machine: 32 GB in use, configured 48-96 GB — a fixed 16 GB cap");
+    println!("frees ~16 GB after reboot but is YOUR perf decision); powercfg /h /type reduced; boot task");
+    println!("MichRelocationFinish completes pending F:\\backup\\relocated junction swaps at next boot.");
 }
 
 // ------------------------------------------------------------------ tests --
