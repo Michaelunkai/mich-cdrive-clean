@@ -21,8 +21,7 @@ quarantine-worthy binaries in `ProgramData`. Generic cleaners either stop at the
 
 - **Every rule is explicit.** Nothing is walked that isn't named by a rule.
 - **A hard protection list is checked before every single deletion** — `Windows\Installer`,
-  `Package Cache`, `WinSxS`, `DriverStore`, live session dirs, data caches (IMDb dataset cache),
-  and the tool's own folder.
+  `Package Cache`, `WinSxS`, `DriverStore`, live session dirs, and the tool's own folder.
 - **Locked files are skipped, never forced.** If a running app holds a file, it stays — run the
   tool again after closing the app.
 - **Age gates.** Logs and session files are only removed when older than 7 days; fresh temp is
@@ -41,9 +40,25 @@ quarantine-worthy binaries in `ProgramData`. Generic cleaners either stop at the
 | Verified leftovers | Dr.Web log folder, Gnet downloaded installers, qBittorrent `.pdb`, Macrium test vhdx, GameAutoInstall inno-temp, LayaAutoSetup, GIGABYTE Control Center download cache, Downloaded Installations |
 | Security | **Quarantines** (moves, not deletes) known-bad binaries — e.g. `C:\ProgramData\wildrig.exe` (cryptominer) → `C:\Temp\startup-cleanup\quarantine\` |
 
-Optional flags: `--imdb` (also purge the IMDb dataset cache — BlackCinema re-downloads it),
-`--apps` (Zoom ASR model), `--recycle` (empty C: Recycle Bin), `--deep` (DISM
-`StartComponentCleanup` — Microsoft-supported WinSxS compaction, 5–20 min).
+Optional flags: `--apps` (Zoom ASR model), `--recycle` (empty C: Recycle Bin), `--deep` (DISM
+`StartComponentCleanup` — Microsoft-supported WinSxS compaction, 5–20 min). `--imdb` is a legacy
+no-op: the IMDb dataset cache is a default rule since v1.3.0 with a 1-day age gate.
+
+**v1.3.0 — always-1770 guarantee:**
+
+- **`qb-c-sources` rule** — talks to the local qBittorrent WebUI (127.0.0.1:18080, zero-dep
+  HTTP/1.0 over `TcpStream`), finds any torrent whose save path is exactly `C:\qb-moved-sources`
+  (the GameAutoInstall daemon's legacy staging root, which re-filled twice with 15–50 GB repacks),
+  retires it via the daemon's own `user-deleted-torrents.txt` marker protocol
+  (`hash|name|ISO-UTC`), deletes torrent + files, then sweeps leftovers. `E:\media` and
+  `F:\Downloads` libraries are **never** touched; if qB is down, nothing is deleted.
+- **`a-reloc-old` rule** — sweeps `*.reloc-old` relocation leftovers (byte-verified copies
+  already live on `F:\backup\relocated`), age > 1 day.
+- **`a-defender-platform` rule** — Defender platform dirs keep newest 2 (older are dormant;
+  Defender is excluded on this machine anyway).
+- **IMDb caches default** — dataset cache + s22 snapshot clean after 1 day (regenerable).
+- **1770 GB target gate** — every `--apply` run ends with `TARGET 1770 GB: HELD (… GB free)`
+  or an exact shortfall plus what's pending (boot-time junctions / pagefile cap).
 
 At the end of every run it prints **big optional wins** — multi-GB items that need a human
 decision (Docker/WSL uninstall, unused Python torch stacks, pagefile cap) and are never deleted
@@ -138,3 +153,26 @@ Real numbers from the full live campaign on the author's machine (94 GB RAM, 2 T
 **The ceiling:** `fsutil volume allocationreport` closes the books exactly — remaining used space is live data + the pagefile actively backing committed AI workloads. Going further requires user-authorized trade-offs (pagefile cap + reboot ≈ +16 GB, with commit-limit risk; or removing protected apps). The tool prints these as **BIG OPTIONAL WINS** — it never takes them itself.
 
 Boot task `MichRelocationFinish` (one-shot, self-deleting) completes the remaining locked junction swaps at the next reboot.
+
+## v1.3.0 endgame (2026-11-06) — the always-1770 guarantee
+
+The daemon struck back: GameAutoInstall re-queued *The Thaumaturge* (15.58 GB) into
+`C:\qb-moved-sources` overnight, dropping free space to 1754.75 GB. Response, all verified live:
+
+- **Thaumaturge strike** — torrent retired via WebUI (game confirmed already installed on
+  `E:\media\games`), marker appended, staging swept: +15.57 GB.
+- **v1.3.0 qb-c-sources rule** — the tool now kills that entire class of re-download on every
+  run (marker protocol, E:/F: libraries untouched, qB-down = never blind-deletes).
+- **Live junction completion (+5.99 GB)** — fixed a latent bug in the boot task's
+  `MoveJunction` (rename/check path mismatch that would have broken every tool dir at next
+  boot), then completed 10 junction swaps live (laya, npm, uv, omp, gradle, Adoptium,
+  AMD×2, WinLibs, rustup; rename is the atomic in-use test — `bun` failed verify and was
+  correctly skipped for the boot pass).
+- **Pagefile** — fixed 16 GB initial / 64 GB max: commit ceiling *rises* 125.6 → ~158 GB while
+  the file shrinks ~16 GB at next boot. Strictly safer and smaller.
+- **WSL** — Ubuntu vhdx (stopped distro; ClaudeRC/kiri untouched) gets
+  `wsl --manage --set-sparse true` at boot (all distros down at that point) ≈ +1.6 GB.
+
+Result: **`TARGET 1770 GB: HELD (1775.34 GB free)`** on the final `--apply`, with ~+24 GB more
+armed for the next reboot (junctions for `.bun`/`.codex`, pagefile 32→16, WSL sparse) → expected
+~1795+ GB free. Docker, WSL2 distros, Codex, Claude fleet, E:/F: media libraries: all intact.
