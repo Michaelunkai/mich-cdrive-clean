@@ -622,6 +622,70 @@ fn main() {
     rules.push(tree_rule("a-gcc-downloads", "GIGABYTE Control Center download cache", PathBuf::from("C:\\Program Files\\GIGABYTE\\Control Center\\Lib\\Download"), 0));
     rules.push(tree_rule("a-dlled-installs", "Downloaded Installations cache", local.join("Downloaded Installations"), 0));
 
+    // ---- v1.1.0 additions: machine-specific verified junk --------------------------
+    {
+        // game-library test fixtures dumped in the home dir (test-data-<timestamp>)
+        let home = user.clone();
+        rules.push(Rule {
+            name: "a-testdata-home".into(),
+            desc: "test-data-* fixture dirs in user home",
+            run: Box::new(move |ctx, st| {
+                if let Ok(rd) = fs::read_dir(&home) {
+                    for ent in rd.flatten() {
+                        let n = ent.file_name().to_string_lossy().to_string();
+                        if n.starts_with("test-data-") {
+                            if let Some(md) = file_meta(&ent.path()) {
+                                if md.is_dir() && !is_reparse(&md) {
+                                    for e in collect(&ent.path()) {
+                                        delete_file(ctx, &e, 0, st, None);
+                                    }
+                                    prune_dirs(ctx, &ent.path());
+                                }
+                            }
+                        }
+                    }
+                }
+            }),
+        });
+    }
+    rules.push(tree_rule(
+        "win-sandbox-layers",
+        "Windows Sandbox disposable layers (auto-rebuild on next sandbox use)",
+        pd.join("Microsoft\\Windows\\Containers\\Layers"),
+        0,
+    ));
+    rules.push(Rule {
+        name: "a-zcode-drafts".into(),
+        desc: "zcode session drafts INACTIVE > 7 days (dir mtime)",
+        run: Box::new({
+            let user2 = user.clone();
+            move |ctx, st| {
+            let ws = user2.join(".zcode\\workspace");
+            if let Ok(rd) = fs::read_dir(&ws) {
+                for ent in rd.flatten() {
+                    let n = ent.file_name().to_string_lossy().to_string();
+                    if !n.starts_with("draft-") {
+                        continue;
+                    }
+                    if let Some(md) = file_meta(&ent.path()) {
+                        // only drafts whose own dir mtime is older than 7 days (= inactive;
+                        // active sessions touch their workspace constantly)
+                        if md.is_dir() && !is_reparse(&md) && mtime_of(&md) > 0
+                            && ctx.now.saturating_sub(mtime_of(&md)) > 7 * 86400
+                        {
+                            for e in collect(&ent.path()) {
+                                delete_file(ctx, &e, 0, st, None);
+                            }
+                            prune_dirs(ctx, &ent.path());
+                        }
+                    }
+                }
+            }
+            }
+        }),
+    });
+    rules.push(exact_file_rule("a-macrium-waik", "Macrium WAIK installer leftover", PathBuf::from("C:\\Program Files\\Macrium\\Reflect\\WAIKFiles15x64.exe")));
+
     // ---- optional flags -------------------------------------------------------------
     if imdb {
         rules.push(tree_rule("o-imdb-main", "IMDb gz dataset cache (re-downloads on next index build)", PathBuf::from("C:\\Temp\\imdb-datasets"), 0));
@@ -666,14 +730,10 @@ fn main() {
 
     // ---- tips ----------------------------------------------------------------------
     let tips: Vec<(&str, PathBuf)> = vec![
-        ("Docker Desktop (uninstall if unused)", PathBuf::from("C:\\Program Files\\Docker")),
-        ("WSL Ubuntu disk C:\\wsl2 (wsl --unregister ubuntu if unused)", PathBuf::from("C:\\wsl2")),
-        ("GIGABYTE AI Memory Boost (task already disabled; uninstall)", PathBuf::from("C:\\Program Files\\GIGABYTE\\AIMemoryBoostModule")),
-        ("GIGABYTE AISnatch (uninstall)", PathBuf::from("C:\\Program Files\\GIGABYTE\\AISnatch")),
-        ("Standalone Python 3.14 torch stack (if unused)", local.join("Python\\pythoncore-3.14-64")),
+        ("Docker Desktop app (data already lives on F:; uninstall app if unused)", PathBuf::from("C:\\Program Files\\Docker")),
+        ("WSL Ubuntu disk C:\\wsl2 (protected; compact via wsl --manage)", PathBuf::from("C:\\wsl2")),
         ("Python 3.12 site-packages (if 3.12 retired)", local.join("Programs\\Python\\Python312\\Lib\\site-packages")),
         (".laya venv (if laya inactive)", user.join(".laya\\venv")),
-        ("openmausbot app (if unused)", local.join("Programs\\openmausbot")),
     ];
 
     if tips_only {
