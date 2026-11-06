@@ -1144,7 +1144,7 @@ fn main() {
             println!("TARGET 1775 GB: HELD ({:.2} GB free)", free_gb);
         } else {
             println!(
-                "TARGET 1775 GB: short by {:.2} GB — the 48 GB pagefile file shrinks to 16 GB at next reboot (+32 GB, config re-asserted every run) + bun junction + kiri sparse via MichBootFinish2 -> ~1792 GB permanently",
+                "TARGET 1775 GB: short by {:.2} GB — the 48 GB pagefile file shrinks to 16 GB at next reboot (+32 GB); watchdog task MichWatchdog keeps the pagefile cap, VSS 1 GB cap, bun junction and kiri sparse enforced every 5 min -> ~1792 GB permanently",
                 target - free_gb
             );
         }
