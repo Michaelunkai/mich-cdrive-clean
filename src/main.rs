@@ -1,12 +1,12 @@
 // mich-cdrive-clean — safe, aggressive, repeatable C: drive cleaner.
 // std-only, no dependencies. Dry-run by default; pass --apply to delete.
 //
-// v1.3.0: qb-c-sources hook — retires qBittorrent torrents that stage into
+// v1.3.1: qb-c-sources hook — retires qBittorrent torrents that stage into
 //         C:\qb-moved-sources via the GameAutoInstall daemon's own
 //         user-deleted-torrents marker protocol, then sweeps the leftovers.
 //         E:\media + F:\Downloads libraries are never touched. IMDb dataset
-//         caches now clean by default after a 2-day age gate. Every --apply
-//         run verifies the 1770 GB free-space target at the end.
+//         cache is the elastic reserve (2-hour gate). Every --apply run
+//         verifies the 1775 GB free-space target at the end.
 //
 // Safety model:
 //   * Only explicit rule targets are ever touched; nothing else is walked.
@@ -381,6 +381,11 @@ type Guard<'a> = &'a dyn Fn(&Path) -> bool;
 
 /// Try to delete one file according to gates. Never forces locked files.
 fn delete_file(ctx: &Ctx, e: &Entry, min_age_days: u64, st: &mut Stats, guard: Option<Guard>) {
+    delete_file_secs(ctx, e, min_age_days * 86400, st, guard)
+}
+
+/// Same, with the age gate expressed in SECONDS (for sub-day elastic rules).
+fn delete_file_secs(ctx: &Ctx, e: &Entry, min_secs: u64, st: &mut Stats, guard: Option<Guard>) {
     if is_protected(ctx, &e.path) {
         st.prot += e.size;
         return;
@@ -391,7 +396,7 @@ fn delete_file(ctx: &Ctx, e: &Entry, min_age_days: u64, st: &mut Stats, guard: O
             return;
         }
     }
-    if min_age_days > 0 && ctx.now.saturating_sub(e.mtime) < min_age_days * 86400 {
+    if min_secs > 0 && ctx.now.saturating_sub(e.mtime) < min_secs {
         st.young += e.size;
         return;
     }
@@ -620,7 +625,7 @@ fn exact_file_rule(name: &str, desc: &'static str, path: PathBuf) -> Rule {
 
 fn print_help() {
     println!(
-        "mich-cdrive-clean v1.3.0 — safe, aggressive, repeatable C: drive cleaner\n\
+        "mich-cdrive-clean v1.3.1 — safe, aggressive, repeatable C: drive cleaner\n\
          \n\
          USAGE:\n\
          \x20 mich-cdrive-clean                    dry run (reports what WOULD be freed — default, always safe)\n\
@@ -638,7 +643,7 @@ fn print_help() {
          \n\
          v1.3.0: auto-retires qBittorrent torrents staging into C:\\qb-moved-sources\n\
          (daemon marker protocol; E:/F: media libraries untouched) and verifies the\n\
-         1770 GB free-space target at the end of every --apply run.\n"
+         1775 GB free-space target at the end of every --apply run.\n"
     );
 }
 
@@ -732,6 +737,8 @@ fn main() {
         windir.join("ServiceProfiles\\NetworkService\\AppData\\Local\\Microsoft\\Windows\\DeliveryOptimization\\Cache"),
         0,
     ));
+    rules.push(tree_rule("win-wdi-logs", "WDI diagnostic boot logs/ETL > 1d", windir.join("System32\\WDI\\LogFiles"), 1));
+    rules.push(files_rule("win-winevt-archive", "archived event logs > 1d", windir.join("System32\\winevt\\Logs"), "Archive-*.evtx", 1));
     rules.push(tree_rule("win-wer-machine", "WER reports (machine)", pd.join("Microsoft\\Windows\\WER\\ReportQueue"), 0));
     rules.push(tree_rule("win-wer-archive", "WER reports archive (machine)", pd.join("Microsoft\\Windows\\WER\\ReportArchive"), 0));
     rules.push(tree_rule("win-wer-user", "WER reports (user)", local.join("Microsoft\\Windows\\WER"), 0));
@@ -801,7 +808,8 @@ fn main() {
     }
     rules.push(tree_rule("a-zcode-updater", "ZCode updater cache", local.join("@zcodedesktop-updater"), 0));
     rules.push(tree_rule("a-zcode-crash", "ZCode crash archives", user.join(".zcode\\v2\\crash"), 0));
-    rules.push(files_rule("a-zcode-logs", "ZCode CLI logs > 7d", user.join(".zcode\\cli\\log"), "*.jsonl", 7));
+    rules.push(files_rule("a-zcode-logs", "ZCode CLI logs > 2d", user.join(".zcode\\cli\\log"), "*.jsonl", 2));
+    rules.push(files_rule("a-cargo-cache", "cargo registry download cache > 7d (*.crate; src/ stays)", user.join(".cargo\\registry\\cache"), "*.crate", 7));
     rules.push(files_rule("a-ultai-sessions", "ultimate-ai sessions > 7d", user.join(".ultimate-ai\\sessions"), "*.json", 7));
     rules.push(tree_rule("a-drweb", "Dr.Web leftover log folder", user.join("Doctor Web"), 0));
     rules.push(tree_rule("a-gnet-downloads", "Gnet installer downloads", user.join("Documents\\WindowsPowerShell\\Gnet\\Reports\\downloads"), 0));
@@ -964,9 +972,22 @@ fn main() {
         });
     }
 
-    // ---- IMDb caches: default since v1.3.0 (regenerable; 1-day age gate) -----------
-    rules.push(tree_rule("a-imdb-cache", "IMDb gz dataset cache > 1d (BlackCinema re-downloads on demand)", PathBuf::from("C:\\Temp\\imdb-datasets"), 1));
-    rules.push(tree_rule("a-imdb-s22", "IMDb s22 snapshot > 1d", PathBuf::from("C:\\Temp\\s22"), 1));
+    // ---- IMDb caches: elastic reserve (2-hour gate; BlackCinema re-downloads on demand)
+    {
+        let imdb_roots = vec![PathBuf::from("C:\\Temp\\imdb-datasets"), PathBuf::from("C:\\Temp\\s22")];
+        rules.push(Rule {
+            name: "a-imdb-cache".into(),
+            desc: "IMDb dataset cache > 2h (elastic reserve; re-downloads on demand)".into(),
+            run: Box::new(move |ctx, st| {
+                for r in &imdb_roots {
+                    for e in collect(r) {
+                        delete_file_secs(ctx, &e, 2 * 3600, st, None);
+                    }
+                    prune_dirs(ctx, r);
+                }
+            }),
+        });
+    }
     // Defender keeps the newest platform binary; N-2 and older are dormant (and
     // Defender is excluded on this machine) — keep newest 2 for update safety.
     rules.push(keep_newest_dirs("a-defender-platform", "Defender platform dirs (keep newest 2)", pd.join("Microsoft\\Windows Defender\\Platform"), "4.", 2));
@@ -1020,7 +1041,9 @@ fn main() {
     if tips_only {
         println!("=== BIG OPTIONAL WINS (need your decision — NOT deleted by this tool) ===");
         for (label, p) in &tips {
-            let sz: u64 = collect(p).iter().map(|e| e.size).sum();
+            // junction-aware: relocated targets report 0 (their bytes live on F: now)
+            let junction = file_meta(p).map(|md| is_reparse(&md)).unwrap_or(false);
+            let sz: u64 = if junction { 0 } else { collect(p).iter().map(|e| e.size).sum() };
             if sz > 0 {
                 println!("  {:>10}  {}  [{}]", gb(sz), label, p.display());
             }
@@ -1098,14 +1121,14 @@ fn main() {
         let d = free1 - free0; // signed: live sessions can consume space mid-run
         let delta = if d >= 0 { gb(d as u64) } else { format!("-{}", gb(d.unsigned_abs())) };
         println!("C: free after : {}  (delta this run: {})", gb(free1 as u64), delta);
-        // hard guarantee this tool is built around: >= 1770 GB free after every --apply
-        let target: f64 = 1770.0;
+        // hard guarantee this tool is built around: >= 1775 GB free after every --apply
+        let target: f64 = 1775.0;
         let free_gb = free1 as f64 / 1073741824.0;
         if free_gb >= target {
-            println!("TARGET 1770 GB: HELD ({:.2} GB free)", free_gb);
+            println!("TARGET 1775 GB: HELD ({:.2} GB free)", free_gb);
         } else {
             println!(
-                "TARGET 1770 GB: short by {:.2} GB — pending: boot task MichRelocationFinish (+~8 GB junctions) and the 16 GB pagefile cap land at next reboot",
+                "TARGET 1775 GB: short by {:.2} GB — REBOOT PENDING: armed boot task lands pagefile 32->16 GB + bun/codex junctions + WSL sparse (~+18 GB total), locking this target in permanently",
                 target - free_gb
             );
         }
@@ -1113,7 +1136,9 @@ fn main() {
 
     println!("\n=== BIG OPTIONAL WINS (need your decision — NOT deleted) ===");
     for (label, p) in &tips {
-        let sz: u64 = collect(p).iter().map(|e| e.size).sum();
+        // junction-aware: relocated targets report 0 (their bytes live on F: now)
+        let junction = file_meta(p).map(|md| is_reparse(&md)).unwrap_or(false);
+        let sz: u64 = if junction { 0 } else { collect(p).iter().map(|e| e.size).sum() };
         if sz > 1024 * 1024 {
             println!("  {:>10}  {}", gb(sz), label);
         }
