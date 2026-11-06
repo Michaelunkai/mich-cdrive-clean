@@ -625,7 +625,7 @@ fn exact_file_rule(name: &str, desc: &'static str, path: PathBuf) -> Rule {
 
 fn print_help() {
     println!(
-        "mich-cdrive-clean v1.3.2 — safe, aggressive, repeatable C: drive cleaner\n\
+        "mich-cdrive-clean v1.3.3 — safe, aggressive, repeatable C: drive cleaner\n\
          \n\
          USAGE:\n\
          \x20 mich-cdrive-clean                    dry run (reports what WOULD be freed — default, always safe)\n\
@@ -1118,6 +1118,20 @@ fn main() {
             .map(|s| println!("shadow-cap exit: {}", s.code().unwrap_or(-1)));
     }
 
+    if apply {
+        // Pagefile cap assertion: the machine's repair/RAM tooling keeps reverting
+        // the fixed 16 GB initial / 64 GB max config (observed 16384/65536 -> 49152/98304,
+        // boot then created a 48 GB pagefile, instantly eating 16 GB). Re-assert on
+        // every run so the config is always the intended one at the next boot.
+        let _ = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Set-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management' -Name PagingFiles -Value 'C:\\pagefile.sys 16384 65536' -Type MultiString",
+            ])
+            .status();
+    }
+
     let (free1, _) = disk_free_bytes("C:\\").unwrap_or((0, 0));
     if apply {
         let d = free1 - free0; // signed: live sessions can consume space mid-run
@@ -1145,9 +1159,9 @@ fn main() {
             println!("  {:>10}  {}", gb(sz), label);
         }
     }
-    println!("\nAlso consider: pagefile.sys (this machine: 32 GB in use, configured 48-96 GB — a fixed 16 GB cap");
-    println!("frees ~16 GB after reboot but is YOUR perf decision); powercfg /h /type reduced; boot task");
-    println!("MichRelocationFinish completes pending F:\\backup\\relocated junction swaps at next boot.");
+    println!("\nPagefile: every --apply re-asserts fixed 16 GB initial / 64 GB max (48 GB file -> 16 GB at next");
+    println!("reboot; commit ceiling ~158 GB, bigger than today's 141). Boot task MichBootFinish2 finishes the");
+    println!("remaining junctions + WSL kiri sparse + pagefile assert at next logon, then self-deletes.");
 }
 
 // ------------------------------------------------------------------ tests --
