@@ -1144,7 +1144,7 @@ fn main() {
             println!("TARGET 1775 GB: HELD ({:.2} GB free)", free_gb);
         } else {
             println!(
-                "TARGET 1775 GB: short by {:.2} GB — REBOOT PENDING: armed boot task lands pagefile 32->16 GB + bun/codex junctions + WSL sparse (~+18 GB total), locking this target in permanently",
+                "TARGET 1775 GB: short by {:.2} GB — the 48 GB pagefile file shrinks to 16 GB at next reboot (+32 GB, config re-asserted every run) + bun junction + kiri sparse via MichBootFinish2 -> ~1792 GB permanently",
                 target - free_gb
             );
         }
