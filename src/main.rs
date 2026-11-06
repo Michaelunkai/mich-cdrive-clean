@@ -625,7 +625,7 @@ fn exact_file_rule(name: &str, desc: &'static str, path: PathBuf) -> Rule {
 
 fn print_help() {
     println!(
-        "mich-cdrive-clean v1.3.1 — safe, aggressive, repeatable C: drive cleaner\n\
+        "mich-cdrive-clean v1.3.2 — safe, aggressive, repeatable C: drive cleaner\n\
          \n\
          USAGE:\n\
          \x20 mich-cdrive-clean                    dry run (reports what WOULD be freed — default, always safe)\n\
@@ -731,6 +731,8 @@ fn main() {
     rules.push(tree_rule("win-minidumps", "minidumps", windir.join("Minidump"), 0));
     rules.push(tree_rule("win-livekernel", "LiveKernelReports", windir.join("LiveKernelReports"), 0));
     rules.push(name_dirs_rule("win-catroot2-baks", "catroot2.bak-* repair backups", windir.join("System32"), "catroot2.bak-*", 0));
+    rules.push(name_dirs_rule("win-catroot2-old", "catroot2.old repair leftover", windir.join("System32"), "catroot2.old*", 0));
+    rules.push(name_dirs_rule("win-sd-old", "SoftwareDistribution.old_* update-repair leftovers (live dir untouched)", windir.clone(), "SoftwareDistribution.old*", 0));
     rules.push(tree_rule(
         "win-delivery-opt",
         "Delivery Optimization cache",
