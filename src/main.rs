@@ -625,7 +625,7 @@ fn exact_file_rule(name: &str, desc: &'static str, path: PathBuf) -> Rule {
 
 fn print_help() {
     println!(
-        "mich-cdrive-clean v1.3.3 — safe, aggressive, repeatable C: drive cleaner\n\
+        "mich-cdrive-clean v1.3.4 — safe, aggressive, repeatable C: drive cleaner\n\
          \n\
          USAGE:\n\
          \x20 mich-cdrive-clean                    dry run (reports what WOULD be freed — default, always safe)\n\
@@ -741,6 +741,10 @@ fn main() {
     ));
     rules.push(tree_rule("win-wdi-logs", "WDI diagnostic boot logs/ETL > 1d", windir.join("System32\\WDI\\LogFiles"), 1));
     rules.push(files_rule("win-winevt-archive", "archived event logs > 1d", windir.join("System32\\winevt\\Logs"), "Archive-*.evtx", 1));
+    rules.push(tree_rule("win-cbstemp", "CBS/DISM servicing temp > 1d (active installs stay locked)", windir.join("CbsTemp"), 1));
+    rules.push(files_rule("a-etw-resp", "ETW MCP driver response log (regenerable)", user.join(".zcode\\mcp-servers\\etw-driver"), "etw-resp.jsonl", 0));
+    rules.push(files_rule("a-rtbackup-rot", "WMI RtBackup ETW rotations > 1d", windir.join("System32\\LogFiles\\WMI\\RtBackup"), "Diagtrack-Listener.etl.0*", 1));
+    rules.push(files_rule("a-kiri-update", "Kiri updater msis > 2d", local.join("Kiri\\update"), "*.msi", 2));
     rules.push(tree_rule("win-wer-machine", "WER reports (machine)", pd.join("Microsoft\\Windows\\WER\\ReportQueue"), 0));
     rules.push(tree_rule("win-wer-archive", "WER reports archive (machine)", pd.join("Microsoft\\Windows\\WER\\ReportArchive"), 0));
     rules.push(tree_rule("win-wer-user", "WER reports (user)", local.join("Microsoft\\Windows\\WER"), 0));
@@ -1119,15 +1123,16 @@ fn main() {
     }
 
     if apply {
-        // Pagefile cap assertion: the machine's repair/RAM tooling keeps reverting
-        // the fixed 16 GB initial / 64 GB max config (observed 16384/65536 -> 49152/98304,
-        // boot then created a 48 GB pagefile, instantly eating 16 GB). Re-assert on
-        // every run so the config is always the intended one at the next boot.
+        // Pagefile cap assertion (binary backstop — text edits cannot flip this):
+        // the machine's repair/RAM tooling keeps re-imposing a 48-96 GB pagefile, and
+        // the profile `addph` function sets AutomaticManagedPagefile=true, under which
+        // Windows IGNORES PagingFiles and recomputes its own 48 GB config. Both knobs
+        // are asserted on every run so the intended config wins at the next boot.
         let _ = Command::new("powershell.exe")
             .args([
                 "-NoProfile",
                 "-Command",
-                "Set-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management' -Name PagingFiles -Value 'C:\\pagefile.sys 16384 65536' -Type MultiString",
+                "$c = Get-WmiObject Win32_ComputerSystem -EnableAllPrivileges; if ($c.AutomaticManagedPagefile) { $c.AutomaticManagedPagefile = $false; $null = $c.Put() }; Set-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management' -Name PagingFiles -Value 'C:\\pagefile.sys 16384 65536' -Type MultiString",
             ])
             .status();
     }
