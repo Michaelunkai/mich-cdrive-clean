@@ -636,7 +636,7 @@ fn exact_file_rule(name: &str, desc: &'static str, path: PathBuf) -> Rule {
 
 fn print_help() {
     println!(
-        "mich-cdrive-clean v1.4.1 — safe, aggressive, repeatable C: drive cleaner\n\
+        "mich-cdrive-clean v1.4.2 — safe, aggressive, repeatable C: drive cleaner\n\
          \n\
          USAGE:\n\
          \x20 mich-cdrive-clean                    dry run (reports what WOULD be freed — default, always safe)\n\
@@ -1213,6 +1213,11 @@ fn main() {
                 "-Command",
                 "Delete-DeliveryOptimizationCache -Force -ErrorAction SilentlyContinue | Out-Null; New-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DeliveryOptimization' -Force | Out-Null; Set-ItemProperty 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DeliveryOptimization' -Name MaxCacheSize -Value 1024 -Type DWord",
             ])
+            .status();
+        // VSS shadows: every servicing pass creates a ~1 GB shadow at the capped limit.
+        // Bounded churn win — delete on each run (established policy on this machine).
+        let _ = Command::new("vssadmin.exe")
+            .args(["delete", "shadows", "/for=C:", "/all", "/quiet"])
             .status();
     }
 
