@@ -636,7 +636,7 @@ fn exact_file_rule(name: &str, desc: &'static str, path: PathBuf) -> Rule {
 
 fn print_help() {
     println!(
-        "mich-cdrive-clean v1.4.0 — safe, aggressive, repeatable C: drive cleaner\n\
+        "mich-cdrive-clean v1.4.1 — safe, aggressive, repeatable C: drive cleaner\n\
          \n\
          USAGE:\n\
          \x20 mich-cdrive-clean                    dry run (reports what WOULD be freed — default, always safe)\n\
@@ -756,6 +756,9 @@ fn main() {
     rules.push(files_rule("a-etw-resp", "ETW MCP driver response log (regenerable)", user.join(".zcode\\mcp-servers\\etw-driver"), "etw-resp.jsonl", 0));
     rules.push(files_rule("a-rtbackup-rot", "WMI RtBackup ETW rotations > 1d", windir.join("System32\\LogFiles\\WMI\\RtBackup"), "Diagtrack-Listener.etl.0*", 1));
     rules.push(files_rule("a-kiri-update", "Kiri updater msis > 2d", local.join("Kiri\\update"), "*.msi", 2));
+    rules.push(tree_rule("win-configfix", "repair-cycle registry snapshot (configfix) > 14d", windir.join("System32\\configfix"), 14));
+    rules.push(tree_rule("a-zcode-pastes", "zcode paste attachments > 2d (stale session inputs)", user.join(".zcode\\tmp\\paste-attachments"), 2));
+    rules.push(files_rule("a-zcode-v2-logs", "zcode v2 app logs > 2d", user.join(".zcode\\v2\\logs"), "*.log", 2));
 
     // ---- old app versions & dead installation payloads (v1.4.0) ----------------------
     // Bundled redistributables that already did their job (apps re-download on repair).
@@ -1199,6 +1202,16 @@ fn main() {
                 "-NoProfile",
                 "-Command",
                 "$c = Get-WmiObject Win32_ComputerSystem -EnableAllPrivileges; if ($c.AutomaticManagedPagefile) { $c.AutomaticManagedPagefile = $false; $null = $c.Put() }; Set-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management' -Name PagingFiles -Value 'C:\\pagefile.sys 16384 65536' -Type MultiString",
+            ])
+            .status();
+        // Delivery Optimization cache: the file walker CANNOT touch it (NetworkService
+        // profile ACLs block even elevated walkers — the tree rule silently did nothing
+        // while 6 GB piled up). Use the supported API + cap the cache at 1 GB.
+        let _ = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Delete-DeliveryOptimizationCache -Force -ErrorAction SilentlyContinue | Out-Null; New-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DeliveryOptimization' -Force | Out-Null; Set-ItemProperty 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DeliveryOptimization' -Name MaxCacheSize -Value 1024 -Type DWord",
             ])
             .status();
     }

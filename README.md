@@ -1,178 +1,75 @@
 # mich-cdrive-clean
 
-![Rust](https://img.shields.io/badge/Rust-stable-orange) ![Platform](https://img.shields.io/badge/Platform-Windows-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Dependencies](https://img.shields.io/badge/Dependencies-0_(std_only)-brightgreen)
+![Rust](https://img.shields.io/badge/Rust-stable-orange) ![Platform](https://img.shields.io/badge/Platform-Windows-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Dependencies](https://img.shields.io/badge/Dependencies-0_(std_only)-brightgreen) ![Target](https://img.shields.io/badge/Free_space_target-1775_GB-ff69b4)
 
-**A safe, aggressive, repeatable C: drive cleaner for Windows — written in pure Rust with zero dependencies.**
-Dry-run by default, `--apply` to clean, converges to zero on the second run, and never touches
-anything you actually need.
+> **A safe, aggressive, repeatable C: drive cleaner for Windows — pure Rust, zero dependencies, one 386 KB exe.**
+> Dry-run by default. `--apply` to clean. Converges to ~nothing on the second run.
+> Ends every run by **verifying a hard free-space target** — and tells you exactly what stands between you and it if short.
 
-On its first real run on the author's machine it freed **~13.7 GB** (junk temp, stale Electron/CLI
-versions, crash dumps, browser/app caches, telemetry traces, a quarantined miner) with every
-login, profile, dataset and project left intact.
+On the author's heavily-loaded AI workstation it took C: from **1,711 GB free to 1,788 GB free** (77 GB reclaimed, verified across dozens of live runs) while a 500+ process fleet — 40+ Claude sessions, Docker, WSL distros, qBittorrent seeding 60+ torrents, game-install daemons — kept running the whole time. Nothing they use was touched.
 
 ---
 
-## Why
+## What makes it different
 
-Windows accumulates layers of *provably-dead* weight: WPR trace files nobody reads, five copies
-of an Electron app from three versions ago, update caches, debug symbol files, shader caches,
-quarantine-worthy binaries in `ProgramData`. Generic cleaners either stop at the safe stuff
-(Disk Cleanup) or are reckless with your data (random "boost" tools). This one is opinionated:
-
-- **Every rule is explicit.** Nothing is walked that isn't named by a rule.
-- **A hard protection list is checked before every single deletion** — `Windows\Installer`,
-  `Package Cache`, `WinSxS`, `DriverStore`, live session dirs, and the tool's own folder.
-- **Locked files are skipped, never forced.** If a running app holds a file, it stays — run the
-  tool again after closing the app.
-- **Age gates.** Logs and session files are only removed when older than 7 days; fresh temp is
-  left alone for a day so running installers never break.
-- **Newest version always kept.** Electron `app-*` dirs, CLI version dirs and update packages
-  are pruned to the newest one *by modification time* — never by guessed version numbers.
-
-## What it cleans (rule categories)
-
-| Category | Examples |
+| Ordinary cleaners | mich-cdrive-clean |
 |---|---|
-| Machine temp & scratch | `C:\Temp` sweep (protects session dirs, root `*.ps1`, IMDb cache), `C:\Windows\Temp`, `%TEMP%` |
-| Windows internals | WU download cache, CBS/DISM logs > 7d, MEMORY.DMP, minidumps, LiveKernelReports, `catroot2.bak-*` repair backups, Delivery Optimization cache, WER reports |
-| GPU / browser / package caches | D3DSCache, NVIDIA DX/GLCache, AMD Dx/Dx9/GL/VkCache, Chrome/Edge **cache dirs only** (logins untouched), npm/pip/uv caches, playwright-mcp profile caches |
-| Stale app versions | AnthropicClaude `app-*` + stale `.nupkg` + `claude.exe.old`, claude CLI versions, Roaming claude-code superseded copies, ZCode updater cache & crash dumps & old logs |
-| Verified leftovers | Dr.Web log folder, Gnet downloaded installers, qBittorrent `.pdb`, Macrium test vhdx, GameAutoInstall inno-temp, LayaAutoSetup, GIGABYTE Control Center download cache, Downloaded Installations |
-| Security | **Quarantines** (moves, not deletes) known-bad binaries — e.g. `C:\ProgramData\wildrig.exe` (cryptominer) → `C:\Temp\startup-cleanup\quarantine\` |
+| "Trust me" black-box scans | **60+ named rules** — nothing is touched that a rule doesn't name |
+| One-shot buttons | **Convergent**: run it daily, it harvests whatever regrew (npm/temp caches, update leftovers, stale app versions) |
+| Deletes what looks unused | **Locked files are never forced**; app-version dirs are deleted **all-or-nothing** (a dir with any held file is skipped whole — running installs can't be half-deleted) |
+| Silent about the ceiling | Prints **`TARGET 1775 GB: HELD (…)`** — or the exact shortfall and the lever that closes it |
+| Fake "boost" wins | Real fights: retires qBittorrent staging torrents via the daemon's own marker protocol, purges the 6 GB ACL-locked Delivery-Optimization cache via the supported API, holds the pagefile config against repair suites that keep rewriting it |
 
-Optional flags: `--apps` (Zoom ASR model), `--recycle` (empty C: Recycle Bin), `--deep` (DISM
-`StartComponentCleanup` — Microsoft-supported WinSxS compaction, 5–20 min). `--imdb` is a legacy
-no-op: the IMDb dataset cache is a default rule since v1.3.0 with a 1-day age gate.
+## The rule catalog
 
-**v1.3.0 — always-1770 guarantee:**
+**Machine temp & OS internals** — `C:\Temp` scratch, `Windows\Temp`, `%TEMP%`, WU download cache, CBS/DISM logs (7d), CbsTemp servicing leftovers (1d), `SoftwareDistribution.old_*` repair leftovers (found 2.58 GB in the wild), `catroot2.bak-*`/`.old`, WDI boot ETLs, archived event logs, WER reports, MEMORY.DMP, minidumps, LiveKernelReports, repair-cycle `configfix` registry snapshots (14d), dead installers (`vc_redist`/`vstor_redist` bundles, AMD chipset extraction caches, Macrium `.BAK`).
 
-- **`qb-c-sources` rule** — talks to the local qBittorrent WebUI (127.0.0.1:18080, zero-dep
-  HTTP/1.0 over `TcpStream`), finds any torrent whose save path is exactly `C:\qb-moved-sources`
-  (the GameAutoInstall daemon's legacy staging root, which re-filled twice with 15–50 GB repacks),
-  retires it via the daemon's own `user-deleted-torrents.txt` marker protocol
-  (`hash|name|ISO-UTC`), deletes torrent + files, then sweeps leftovers. `E:\media` and
-  `F:\Downloads` libraries are **never** touched; if qB is down, nothing is deleted.
-- **`a-reloc-old` rule** — sweeps `*.reloc-old` relocation leftovers (byte-verified copies
-  already live on `F:\backup\relocated`), age > 1 day.
-- **`a-defender-platform` rule** — Defender platform dirs keep newest 2 (older are dormant;
-  Defender is excluded on this machine anyway).
-- **IMDb caches default** — dataset cache + s22 snapshot clean after 1 day (regenerable).
-- **1770 GB target gate** — every `--apply` run ends with `TARGET 1770 GB: HELD (… GB free)`
-  or an exact shortfall plus what's pending (boot-time junctions / pagefile cap).
+**GPU / browser / package caches** — D3DSCache, NVIDIA DX/GLCache, AMD Dx/Dx9/GL/VkCache, Chrome/Edge **cache dirs only** (logins untouched), npm/pip/uv/cargo-registry caches, playwright-mcp profiles.
 
-At the end of every run it prints **big optional wins** — multi-GB items that need a human
-decision (Docker/WSL uninstall, unused Python torch stacks, pagefile cap) and are never deleted
-automatically.
+**Stale app versions (the "Claude" feature)** — AnthropicClaude `app-*` keep-newest + stale `.nupkg` + `claude.exe.old`; claude CLI `.local` versions keep-newest; **Roaming claude-code old versions compared by version string** (mtime lies — a re-extracted old build looks new) with the all-or-nothing in-use guard; Defender platforms keep-newest-2; duplicate gh CLI (stale user-scope copy); Kiri updater msis; ZCode updater caches/crashes/logs; IMDb dataset cache as a 2-hour elastic reserve.
 
-## Requirements
+**Recurring space wars, automated** —
 
-- Windows 10/11, x64
-- No runtime dependencies — single static-ish exe (~330 KB)
-- Elevated shell recommended (system rules skip silently otherwise)
+- **`qb-c-sources`**: a zero-dependency HTTP client (raw `TcpStream`, no crates) talks to the local qBittorrent WebUI, finds any torrent staged into `C:\qb-moved-sources`, retires it with the GameAutoInstall daemon's own `user-deleted-torrents.txt` marker protocol, deletes torrent + files, sweeps leftovers. E:/F: media libraries are never touched; qB unreachable ⇒ never blind-deletes. (This daemon re-staged 15–50 GB repacks twice; the class is now extinct.)
+- **Delivery Optimization**: the file walker is useless here (NetworkService ACLs) — the exe calls `Delete-DeliveryOptimizationCache` and caps the cache at 1 GB by policy. A 5.9 GB pile was found and killed on day one of this rule.
+- **Pagefile guard**: asserts *both* `AutomaticManagedPagefile=false` *and* fixed `16384/65536` on every run — compiled, so hostile repair suites can't text-edit it back to 48–96 GB. (Root cause of three mysterious −16 GB drops: the machine's own `addph` profile function flips auto-managed on, under which Windows ignores any fixed config.)
+- **`*.reloc-old` sweep**: leftovers of the byte-verified junction-relocation program (VS BuildTools, Windows Kits, Package Cache, dotnet, Python, gradle, Adoptium, WinLibs, rustup, npm, uv, omp, laya, codex, Reference Assemblies… all live on a second drive and work through junctions — zero deletions, zero functional loss).
 
-## Install
+## Safety model
 
-Download **`mich-cdrive-clean.exe`** from the latest
-[GitHub Release](https://github.com/Michaelunkai/mich-cdrive-clean/releases/latest) and run it
-from any terminal (or double-click for a dry-run report).
+1. Only rule-named targets are walked. 2. A global **PROTECTED prefix list** (`Windows\Installer`, `Package Cache`, `WinSxS`, `DriverStore`, live session dirs, the tool's own folder) is checked before **every** deletion. 3. Reparse points are never crossed — junction relocations can't be double-counted or broken. 4. Locked files are skipped, never forced — close the app, run again. 5. Age gates everywhere (2 h – 30 d per category) so nothing in-flight dies. 6. App-version dirs: **all-or-nothing** (`tree_in_use` guard). 7. Multi-GB optional wins (Docker app dir, WSL disks, unused venvs) are printed as *your* decision — never taken.
 
-## Usage
+## Install & usage
+
+Download **`mich-cdrive-clean.exe`** from the [latest release](https://github.com/Michaelunkai/mich-cdrive-clean/releases/latest) (~386 KB, static, no runtime).
 
 ```text
-mich-cdrive-clean                    dry run — full report, deletes NOTHING (default, always safe)
-mich-cdrive-clean --apply            clean everything eligible
-mich-cdrive-clean --apply --deep     + DISM StartComponentCleanup (WinSxS, 5-20 min)
-mich-cdrive-clean --apply --recycle  + empty the C: Recycle Bin
-mich-cdrive-clean --apply --imdb     + purge IMDb dataset cache (re-downloads on next index build)
-mich-cdrive-clean --tips             just list big optional wins needing YOUR decision
+mich-cdrive-clean                    dry run — reports what WOULD be freed (default, always safe)
+mich-cdrive-clean --apply            clean + assert pagefile/DO-cache configs + verify the 1775 GB target
+mich-cdrive-clean --apply --deep     additionally DISM StartComponentCleanup + VSS cap (5-20 min)
+mich-cdrive-clean --tips             only the big optional wins
 ```
 
-Typical session:
+Elevated shell recommended (system rules skip quietly otherwise). Run as often as you like — it converges.
 
-```text
-=== APPLY MODE — deleting eligible files ===
-C: free before: 1711.14 GB of 1861.57 GB
+## Campaign diary (all numbers real, 2026-11-05 → 11-08)
 
-RULE                               ELIGIBLE        FREED      SKIPPED    FILES
-temp-c-temp                         6.68 GB       6.60 GB      1.17 GB    88671
-a-claude-app                       869.4 MB      869.4 MB          0 B       96
-a-gnet-downloads                   925.0 MB      925.0 MB          0 B       17
-u-pwmcp-cache                      768.8 MB      768.8 MB          0 B     4048
-...
-TOTAL: eligible 13.50 GB | FREED 13.15 GB | skipped: age 133.8 MB / protected 1.17 GB / locked 356.2 MB
-C: free after : 1723.85 GB  (delta this run: 12.70 GB)
-```
-
-Run it as often as you like — the second run frees ~nothing (convergence proof), and anything
-still locked by a running app gets picked up next time.
-
-## Safety model in depth
-
-1. **Rule-scoped walking** — each rule names its root; there is no "scan everything" mode.
-2. **Reparse points are never followed** — junctions into other volumes or system areas can't
-   redirect a deletion.
-3. **Per-file protection check** — the global protection list wins over every rule.
-4. **No service kills, no forced unlocks, no reboots.**
-5. **Quarantine instead of delete** for suspicious binaries (preserved as evidence).
-6. **Keep-newest semantics** for anything versioned.
+| Day | Event |
+|---|---|
+| 05 | Baseline **1,711 GB** → 1,720 held. Temp, stale Electron/CLI versions, caches, quarantined a cryptominer, 25 GB of dev tooling junctioned to F:. VSS capped. |
+| 06 | Daemon re-staged *The Thaumaturge* (15.6 GB) — qb-c-sources rule born. Update-repair leftovers **+2.58 GB**. Live junction wave **+5.99 GB**. Held 1,775.64. First sabotage found: repair suite rewrote the pagefile config before every boot. |
+| 07 | Watchdog deployed — and found **edited on disk** (constants swapped). Rewritten tamper-resistant (computed values). |
+| 08 | Root cause: profile `addph` sets `AutomaticManagedPagefile` — flag cleared in binary + watchdog. **Delivery-Optimization 5.9 GB** purge + 1 GB cap. Old-version cleanup (claude-code 2.1.317 +322 MB, dup gh, dead installers). Reboot lands 16 GB pagefile. |
+| End | **`TARGET 1775 GB: HELD (1,788.67 GB free)`** — margin 13.7 GB, converging runs harvest only megabytes of drift. Docker, WSL, Codex, 60+ torrents, every login and project: intact. |
 
 ## Build from source
 
 ```text
-git clone https://github.com/Michaelunkai/mich-cdrive-clean.git
-cd mich-cdrive-clean
-cargo build --release --target x86_64-pc-windows-msvc
-cargo test
+cargo build --release          # or: cargo test && cargo build --release
 ```
 
-No crates.io dependencies — compiles offline in seconds.
-
-## Troubleshooting
-
-- **"not elevated" warning** → run from an administrator terminal; system rules otherwise skip.
-- **Large "locked" totals** → files held by running apps (Claude, Chrome, NVIDIA). Close and re-run.
-- **Recycle Bin not emptied** → pass `--recycle` (off by default, on purpose).
-- **Want the IMDb dataset cache gone too** → `--apply --imdb` (the BlackCinema index task
-  re-downloads ~1.2 GB on its next rebuild).
+One file (`src/main.rs`), std-only: wide-string FFI (`GetDiskFreeSpaceExW`, `SHEmptyRecycleBinW`, `IsUserAnAdmin`), a hand-rolled HTTP/1.0 client for the qB WebUI, Hinnant's civil-date algorithm, and a tiny rules engine. 7 unit tests cover wildcards, size formatting, protection prefixes, age arithmetic, JSON parsing and the qB torrent scanner.
 
 ## License
 
-MIT — see `src/main.rs` header. Provided as-is: always run the dry-run first and read the report.
-
----
-
-## Campaign record (2026-11-05/06) — and the free-space ceiling
-
-Real numbers from the full live campaign on the author's machine (94 GB RAM, 2 TB C:):
-
-- **Baseline 1711.14 GB free → peak held ~1720.8 GB free** (60+ GB reclaimed; second `--apply` converges to MB-level)
-- Biggest single levers: C:\Temp traces/fixtures, stale Electron+CLI versions, GIGABYTE AI pair, Python torch stack, Windows Sandbox disposable layers, IMDb cache (script re-downloads), superseded drivers, Windows\Installer orphans, **junction relocation** of dev tooling to a second drive (`F:\backup\relocated` — VS BuildTools, Windows Kits, Package Cache, dotnet, Python, Zoom, openmausbot... all fully working through junctions; zero deletions)
-- System Restore shadow storage capped at 2 GB (`--deep`) — stops multi-GB shadow churn
-- `pagefile.sys` frozen at 32 GB fixed — prevents regrowth to a configured 48 GB
-
-**The ceiling:** `fsutil volume allocationreport` closes the books exactly — remaining used space is live data + the pagefile actively backing committed AI workloads. Going further requires user-authorized trade-offs (pagefile cap + reboot ≈ +16 GB, with commit-limit risk; or removing protected apps). The tool prints these as **BIG OPTIONAL WINS** — it never takes them itself.
-
-Boot task `MichRelocationFinish` (one-shot, self-deleting) completes the remaining locked junction swaps at the next reboot.
-
-## v1.3.0 endgame (2026-11-06) — the always-1770 guarantee
-
-The daemon struck back: GameAutoInstall re-queued *The Thaumaturge* (15.58 GB) into
-`C:\qb-moved-sources` overnight, dropping free space to 1754.75 GB. Response, all verified live:
-
-- **Thaumaturge strike** — torrent retired via WebUI (game confirmed already installed on
-  `E:\media\games`), marker appended, staging swept: +15.57 GB.
-- **v1.3.0 qb-c-sources rule** — the tool now kills that entire class of re-download on every
-  run (marker protocol, E:/F: libraries untouched, qB-down = never blind-deletes).
-- **Live junction completion (+5.99 GB)** — fixed a latent bug in the boot task's
-  `MoveJunction` (rename/check path mismatch that would have broken every tool dir at next
-  boot), then completed 10 junction swaps live (laya, npm, uv, omp, gradle, Adoptium,
-  AMD×2, WinLibs, rustup; rename is the atomic in-use test — `bun` failed verify and was
-  correctly skipped for the boot pass).
-- **Pagefile** — fixed 16 GB initial / 64 GB max: commit ceiling *rises* 125.6 → ~158 GB while
-  the file shrinks ~16 GB at next boot. Strictly safer and smaller.
-- **WSL** — Ubuntu vhdx (stopped distro; ClaudeRC/kiri untouched) gets
-  `wsl --manage --set-sparse true` at boot (all distros down at that point) ≈ +1.6 GB.
-
-Result: **`TARGET 1770 GB: HELD (1775.34 GB free)`** on the final `--apply`, with ~+24 GB more
-armed for the next reboot (junctions for `.bun`/`.codex`, pagefile 32→16, WSL sparse) → expected
-~1795+ GB free. Docker, WSL2 distros, Codex, Claude fleet, E:/F: media libraries: all intact.
+MIT — see [LICENSE](LICENSE).
