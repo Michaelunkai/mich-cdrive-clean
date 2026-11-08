@@ -418,6 +418,17 @@ fn delete_file_secs(ctx: &Ctx, e: &Entry, min_secs: u64, st: &mut Stats, guard: 
     }
 }
 
+/// True if any file under dir cannot be opened for write (running image / held).
+/// All-or-nothing guard: app-version dirs are deleted only when fully idle.
+fn tree_in_use(dir: &Path) -> bool {
+    for e in collect(dir) {
+        if fs::OpenOptions::new().read(true).write(true).open(&e.path).is_err() {
+            return true;
+        }
+    }
+    false
+}
+
 /// Post-order removal of now-empty dirs under root (root itself last, if empty).
 fn prune_dirs(ctx: &Ctx, root: &Path) {
     if !ctx.apply || !root.exists() {
@@ -625,7 +636,7 @@ fn exact_file_rule(name: &str, desc: &'static str, path: PathBuf) -> Rule {
 
 fn print_help() {
     println!(
-        "mich-cdrive-clean v1.3.4 — safe, aggressive, repeatable C: drive cleaner\n\
+        "mich-cdrive-clean v1.4.0 — safe, aggressive, repeatable C: drive cleaner\n\
          \n\
          USAGE:\n\
          \x20 mich-cdrive-clean                    dry run (reports what WOULD be freed — default, always safe)\n\
@@ -745,6 +756,42 @@ fn main() {
     rules.push(files_rule("a-etw-resp", "ETW MCP driver response log (regenerable)", user.join(".zcode\\mcp-servers\\etw-driver"), "etw-resp.jsonl", 0));
     rules.push(files_rule("a-rtbackup-rot", "WMI RtBackup ETW rotations > 1d", windir.join("System32\\LogFiles\\WMI\\RtBackup"), "Diagtrack-Listener.etl.0*", 1));
     rules.push(files_rule("a-kiri-update", "Kiri updater msis > 2d", local.join("Kiri\\update"), "*.msi", 2));
+
+    // ---- old app versions & dead installation payloads (v1.4.0) ----------------------
+    // Bundled redistributables that already did their job (apps re-download on repair).
+    rules.push(files_rule("a-redist-laya", "Laya bundled vc_redist > 14d", PathBuf::from("C:\\Program Files\\Laya\\resources\\runtime"), "vc_redist*.exe", 14));
+    rules.push(files_rule("a-redist-logi", "LogiOptionsPlus VSTO runtime installer > 14d", pd.join("Logishrd\\LogiOptionsPlus\\Plugins\\VSTO"), "vstor_redist.exe", 14));
+    rules.push(files_rule("a-redist-gcc", "GIGABYTE EasyTune vc_redist > 14d", PathBuf::from("C:\\Program Files\\GIGABYTE\\Control Center\\Lib\\MBEasyTune\\ExtSoftware\\EasyTuneEngineService"), "VC_redist*.exe", 14));
+    rules.push(files_rule("a-macrium-bak", "Macrium .BAK leftovers > 14d", PathBuf::from("C:\\Program Files\\Macrium\\Common"), "*.BAK", 14));
+    // Whole chipset-driver extraction caches (drivers are already installed).
+    rules.push(tree_rule("a-amd-chipset-pf", "AMD Chipset extraction cache > 14d (x86)", PathBuf::from("C:\\Program Files (x86)\\AMD\\Chipset_Software"), 14));
+    rules.push(tree_rule("a-amd-chipset-roam", "AMD Chipset extraction cache > 14d (Roaming)", roaming.join("AMD\\Chipset_Software"), 14));
+    rules.push(tree_rule("a-amd-chipset-sysprof", "AMD Chipset extraction cache > 14d (systemprofile)", PathBuf::from("C:\\Windows\\SysWOW64\\config\\systemprofile\\AppData\\Roaming\\AMD\\Chipset_Software"), 14));
+    // Duplicate gh CLI: machine-scope (Program Files) wins when it is the newer one.
+    {
+        let gh_pf = PathBuf::from("C:\\Program Files\\GitHub CLI\\gh.exe");
+        let gh_user_dir = local.join("Programs\\GitHub CLI");
+        rules.push(Rule {
+            name: "a-gh-dup".into(),
+            desc: "stale user-scope gh CLI (machine-scope copy is newer and first on PATH)".into(),
+            run: Box::new(move |ctx, st| {
+                let pf_newer = match (file_meta(&gh_pf), file_meta(&gh_user_dir.join("gh.exe"))) {
+                    (Some(a), Some(b)) => mtime_of(&a) > mtime_of(&b),
+                    _ => false,
+                };
+                if !pf_newer {
+                    return;
+                }
+                if tree_in_use(&gh_user_dir) {
+                    return;
+                }
+                for e in collect(&gh_user_dir) {
+                    delete_file(ctx, &e, 14, st, None);
+                }
+                prune_dirs(ctx, &gh_user_dir);
+            }),
+        });
+    }
     rules.push(tree_rule("win-wer-machine", "WER reports (machine)", pd.join("Microsoft\\Windows\\WER\\ReportQueue"), 0));
     rules.push(tree_rule("win-wer-archive", "WER reports archive (machine)", pd.join("Microsoft\\Windows\\WER\\ReportArchive"), 0));
     rules.push(tree_rule("win-wer-user", "WER reports (user)", local.join("Microsoft\\Windows\\WER"), 0));
@@ -786,28 +833,47 @@ fn main() {
         let roam_root = roaming.join("Claude\\claude-code");
         rules.push(Rule {
             name: "a-claude-roam".into(),
-            desc: "Roaming claude-code old copies (superseded by .local CLI)",
+            desc: "Roaming claude-code old versions (superseded by .local CLI; in-use dirs skipped whole)",
             run: Box::new(move |ctx, st| {
-                let newest_local = collect(&local_versions).into_iter().map(|e| e.mtime).max().unwrap_or(0);
-                if newest_local == 0 {
-                    return; // no .local install -> leave Roaming alone
-                }
-                let mut items: Vec<PathBuf> = Vec::new();
-                if let Ok(rd) = fs::read_dir(&roam_root) {
+                // newest .local version by version STRING — mtime lies (a re-extracted
+                // old version gets a fresh mtime and dodged the old mtime-based rule)
+                let mut local_names: Vec<String> = Vec::new();
+                if let Ok(rd) = fs::read_dir(&local_versions) {
                     for ent in rd.flatten() {
-                        let p = ent.path();
-                        if let Some(md) = file_meta(&p) {
-                            if md.is_dir() && !is_reparse(&md) && mtime_of(&md) < newest_local {
-                                items.push(p);
+                        if let Some(n) = ent.file_name().to_str() {
+                            if n.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                                local_names.push(n.to_string());
                             }
                         }
                     }
                 }
-                for p in items {
-                    for e in collect(&p) {
-                        delete_file(ctx, &e, 0, st, None);
+                local_names.sort();
+                let newest_local = match local_names.last() {
+                    Some(v) => v.clone(),
+                    None => return, // no .local install -> leave Roaming alone
+                };
+                if let Ok(rd) = fs::read_dir(&roam_root) {
+                    for ent in rd.flatten() {
+                        let p = ent.path();
+                        let name = ent.file_name().to_string_lossy().to_string();
+                        if name == newest_local {
+                            continue;
+                        }
+                        if let Some(md) = file_meta(&p) {
+                            if md.is_dir()
+                                && !is_reparse(&md)
+                                && name.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
+                            {
+                                if tree_in_use(&p) {
+                                    continue; // a live session still runs from this version
+                                }
+                                for e in collect(&p) {
+                                    delete_file(ctx, &e, 0, st, None);
+                                }
+                                prune_dirs(ctx, &p);
+                            }
+                        }
                     }
-                    prune_dirs(ctx, &p);
                 }
             }),
         });
